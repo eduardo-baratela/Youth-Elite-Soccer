@@ -108,6 +108,29 @@ def fill_birth_dates(df, target='Geburtstag', year_target='Geburtsjahre'):
     return df
 
 
+def calculate_relative_age(birth_date):
+    """
+    Calculate relative age as day of birth within the year.
+    Returns the day number (1-365/366) within the birth year.
+    
+    Args:
+        birth_date: datetime object or pd.Timestamp
+    
+    Returns:
+        int: Day of year (1-365 or 1-366 for leap years), or None if invalid
+    """
+    
+    try:
+        # Convert to datetime if needed
+        if isinstance(birth_date, str):
+            birth_date = pd.to_datetime(birth_date)
+        
+        # Get day of year (1-365 or 1-366)
+        return birth_date.timetuple().tm_yday
+    except:
+        return None
+
+
 def fill_koordinatorengebiet(df, target='Koordinatorengebiet', sources=None):
     """Fill missing Koordinatorengebiet values from T25, T27, T29 columns"""
     if sources is None:
@@ -146,7 +169,7 @@ def fill_stuetzpunktname(df, target='Stützpunktname', sources=None):
 ## Split
     
 # Create mask for players in this age group across all test periods
-def create_ak_subset(clean_data, ak_level, cols_base, filter_feldspieler=True):
+def create_ak_subset(clean_data, ak_level, cols_base, filter_feldspieler=True, gender='male'):
     """
     Create a subset dataframe for a specific age group (Altersklasse).
     
@@ -160,6 +183,8 @@ def create_ak_subset(clean_data, ak_level, cols_base, filter_feldspieler=True):
         Base columns to include in the subset
     filter_feldspieler : bool, optional
         If True, only include players where Spielertyp == 'Feldspieler' for the matching time period
+    gender : str
+        Gender of the subset to include at the file's name
     
     Returns:
     --------
@@ -204,7 +229,7 @@ def create_ak_subset(clean_data, ak_level, cols_base, filter_feldspieler=True):
     ak_df = clean_data.loc[mask, ak_cols].copy()
     
     # Save to CSV
-    ak_df.to_csv(f'../data/{ak_level.lower()}_data.csv', index=False)
+    ak_df.to_csv(f'../data/{ak_level.lower()}_data_{gender}.csv', index=False)
     
     print(f"{ak_level} subset created: {len(ak_df)} rows")
     return ak_df
@@ -250,7 +275,7 @@ def calculate_subjective_scores(df, time_period):
     
     return results
 
-def refine_ak_dataset(ak_df, ak_level):
+def refine_ak_dataset(ak_df, ak_level, gender="male"):
     """
     Refine age group dataset with standardized column names.
     
@@ -260,12 +285,17 @@ def refine_ak_dataset(ak_df, ak_level):
         The age group dataframe (U12, U13, U14, U15)
     ak_level : str
         Age level (e.g., 'U12', 'U13', 'U14', 'U15')
+    gender : str
+        Gender of the subset to include at the file's name
     
     Returns:
     --------
     pd.DataFrame
         Refined dataframe with standardized columns
     """
+    # Reset index to avoid duplicate index issues
+    ak_df = ak_df.reset_index(drop=True)
+    
     refined_df = pd.DataFrame()
     
     # Determine which time period corresponds to this ak_level for each player
@@ -274,18 +304,18 @@ def refine_ak_dataset(ak_df, ak_level):
     def get_time_period_for_row(row):
         """Determine the time period where this player has the target ak_level"""
         for col in time_period_cols:
-            if col in row.index and str(row[col]).strip() == ak_level:
+            if col in ak_df.columns and pd.notna(row[col]) and str(row[col]).strip() == ak_level:
                 return col.replace('_AK', '')
         return None
     
     # Get time period for each player
     time_periods = ak_df.apply(get_time_period_for_row, axis=1)
-    
-    refined_df['AK'] = ak_level
-    
+        
     # Add basic columns
-    refined_df['birthday'] = ak_df['Birth'].values
-    refined_df['BirthYear'] = ak_df['BirthYear'].values
+    refined_df['TalentID'] = ak_df['TalentID'].values
+    refined_df['relative_age'] = ak_df['relative_age'].values
+    refined_df['LZ'] = ak_df['LZ'].values
+    refined_df['AK'] = ak_level
     
     # Map physical test columns using the ak_level (U12, U13, U14, U15)
     # These come from FR (Fitness Ranking) columns
@@ -303,6 +333,7 @@ def refine_ak_dataset(ak_df, ak_level):
     for source_col, target_col in col_mapping.items():
         if source_col in ak_df.columns:
             refined_df[target_col] = ak_df[source_col].values
+
     
     # Calculate SKSC columns (subjective scoring criteria) for each player individually
     def calc_sksc_for_row(idx):
@@ -325,8 +356,8 @@ def refine_ak_dataset(ak_df, ak_level):
     refined_df['SKSC_PSY'] = [r['SKSC_PSY'] for r in sksc_results]  # Psychologisch (Psychological)
     
     # Reorder columns to match desired order
-    desired_cols = ['AK', 'birthday', 'BirthYear', 'height', 'weight', 'SL20', 'GW', 'DR', 'BK', 'BJ',
-                    'SKSC_TEC', 'SKSC_KON', 'SKSC_TAK', 'SKSC_PSY']
+    desired_cols = ['TalentID', 'AK', 'relative_age', 'height', 'weight', 'SL20', 'GW', 'DR', 'BK', 'BJ',
+                    'SKSC_TAK', 'SKSC_TEC', 'SKSC_KON', 'SKSC_PSY', 'LZ']
     # Only include columns that exist
     desired_cols = [col for col in desired_cols if col in refined_df.columns]
     refined_df = refined_df[desired_cols]
@@ -335,8 +366,61 @@ def refine_ak_dataset(ak_df, ak_level):
     refined_df.fillna(refined_df.mean(numeric_only=True) ,inplace = True)
 
     # Save to CSV
-    refined_df.to_csv(f'../data/refined_{ak_level.lower()}_data.csv', index=False)
-
-    
+    refined_df.to_csv(f'../data/refined_{ak_level.lower()}_data_{gender}.csv', index=False)
     
     return refined_df
+
+
+def merge_refined_ak_datasets(ak_levels=['U12', 'U13', 'U14', 'U15'], data_dir='../data', gender='male'):
+    """
+    Merge refined AK datasets, keeping only first (earliest) appearance per TalentID.
+    
+    Parameters:
+    -----------
+    ak_levels : list
+        AK levels in priority order (first = highest priority)
+    data_dir : str
+        Directory containing refined CSV files
+    gender : str
+        Gender of the subset to include at the file's name
+    
+    Returns:
+    --------
+    pd.DataFrame
+        Merged dataset with unique TalentIDs
+    """
+    dfs = []
+    for ak in ak_levels:
+        csv_path = f'{data_dir}/refined_{ak.lower()}_data_{gender}.csv'
+        try:
+            df = pd.read_csv(csv_path)
+            dfs.append(df)
+            print(f"Loaded {len(df)} rows from {ak}")
+        except FileNotFoundError:
+            print(f"Warning: {csv_path} not found, skipping")
+    
+    if not dfs:
+        raise ValueError("No refined datasets found")
+    
+    # Concatenate all datasets
+    combined = pd.concat(dfs, ignore_index=True)
+    print(f"\nTotal rows before deduplication: {len(combined)}")
+    
+    # Create priority mapping (lower number = higher priority)
+    ak_priority = {ak: i for i, ak in enumerate(ak_levels)}
+    combined['_priority'] = combined['AK'].map(ak_priority)
+    
+    # Sort by TalentID and priority, then keep first occurrence
+    combined_sorted = combined.sort_values(['TalentID', '_priority'])
+    merged = combined_sorted.drop_duplicates(subset='TalentID', keep='first')
+    merged = merged.drop(columns=['_priority'])
+    
+    print(f"Total rows after deduplication: {len(merged)}")
+    print(f"\nDistribution by AK:")
+    print(merged['AK'].value_counts().sort_index())
+    
+    # Save merged dataset
+    merged.to_csv(f'{data_dir}/merged_{gender}.csv', index=False)
+    print(f"\nSaved to {data_dir}/merged_{gender}.csv")
+    
+    return merged
